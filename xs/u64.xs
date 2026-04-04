@@ -177,3 +177,21 @@ unlink(SV* self_or_class, ...)
             p = SvPV_nolen(ST(1));
         }
         unlink(p);
+
+UV
+ptr(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        RETVAL = PTR2UV(buf_u64_ptr(h));
+    OUTPUT:
+        RETVAL
+
+UV
+ptr_at(SV* self_sv, UV idx)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        void *p = buf_u64_ptr_at(h, (uint64_t)idx);
+        if (!p) croak("Data::Buffer::Shared::U64: index out of bounds");
+        RETVAL = PTR2UV(p);
+    OUTPUT:
+        RETVAL

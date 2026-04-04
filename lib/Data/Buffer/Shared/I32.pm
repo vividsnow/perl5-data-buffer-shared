@@ -16,6 +16,8 @@ sub import {
     $^H{"Data::Buffer::Shared::I32/buf_i32_unlock_wr"} = 1;
     $^H{"Data::Buffer::Shared::I32/buf_i32_lock_rd"} = 1;
     $^H{"Data::Buffer::Shared::I32/buf_i32_unlock_rd"} = 1;
+    $^H{"Data::Buffer::Shared::I32/buf_i32_ptr"} = 1;
+    $^H{"Data::Buffer::Shared::I32/buf_i32_ptr_at"} = 1;
     $^H{"Data::Buffer::Shared::I32/buf_i32_incr"} = 1;
     $^H{"Data::Buffer::Shared::I32/buf_i32_decr"} = 1;
     $^H{"Data::Buffer::Shared::I32/buf_i32_add"} = 1;
