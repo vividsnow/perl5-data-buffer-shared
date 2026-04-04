@@ -135,7 +135,7 @@ unlink(SV* self_or_class, ...)
         const char *p;
         if (SvROK(self_or_class)) {
             BufHandle* h = INT2PTR(BufHandle*, SvIV(SvRV(self_or_class)));
-            if (h) p = h->path;
+            if (h) { if (!h->path) croak("cannot unlink anonymous buffer"); p = h->path; }
             else croak("Data::Buffer::Shared::F32: destroyed object");
         } else {
             if (items < 2) croak("Usage: Data::Buffer::Shared::F32->unlink($path)");
@@ -181,7 +181,7 @@ SV*
 get_raw(SV* self_sv, UV byte_off, UV nbytes)
     CODE:
         EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
-        RETVAL = newSV(nbytes);
+        RETVAL = newSV(nbytes ? nbytes : 1);
         SvPOK_on(RETVAL);
         SvCUR_set(RETVAL, nbytes);
         if (!buf_f32_get_raw(h, (uint64_t)byte_off, (uint64_t)nbytes, SvPVX(RETVAL))) {
@@ -242,5 +242,47 @@ as_scalar(SV* self_sv)
         SvPOK_on(inner);
         SvREADONLY_on(inner);
         RETVAL = newRV_noinc(inner);
+    OUTPUT:
+        RETVAL
+
+IV
+create_eventfd(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        RETVAL = (IV)buf_create_eventfd(h);
+        if (RETVAL < 0) croak("Data::Buffer::Shared::F32: eventfd: %s", strerror(errno));
+    OUTPUT:
+        RETVAL
+
+void
+attach_eventfd(SV* self_sv, int efd)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        buf_attach_eventfd(h, efd);
+
+SV*
+eventfd(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        if (h->efd < 0) XSRETURN_UNDEF;
+        RETVAL = newSViv(h->efd);
+    OUTPUT:
+        RETVAL
+
+bool
+notify(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        RETVAL = buf_notify(h);
+    OUTPUT:
+        RETVAL
+
+SV*
+wait_notify(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        int64_t val = buf_wait_notify(h);
+        if (val < 0) XSRETURN_UNDEF;
+        RETVAL = newSViv(val);
     OUTPUT:
         RETVAL

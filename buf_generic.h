@@ -34,6 +34,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <linux/futex.h>
+#include <sys/eventfd.h>
 
 /* ---- Constants ---- */
 
@@ -78,7 +79,9 @@ typedef struct {
     size_t     mmap_size;
     char      *path;         /* backing file path (strdup'd, NULL for anon) */
     int        fd;           /* kept open for memfd, -1 otherwise */
+    int        efd;          /* eventfd for notifications, -1 if none */
     uint8_t    wr_locked;    /* process-local: 1 if lock_wr is held */
+    uint8_t    efd_owned;    /* 1 if we created the eventfd (close on destroy) */
 } BufHandle;
 
 /* ---- Futex-based read-write lock ---- */
@@ -352,6 +355,7 @@ static BufHandle *buf_create_map(const char *path, uint64_t capacity,
             goto fail;
         }
         if (hdr->elem_size == 0 ||
+            hdr->data_off < sizeof(BufHeader) ||
             hdr->data_off >= (uint64_t)st.st_size ||
             hdr->capacity > ((uint64_t)st.st_size - hdr->data_off) / hdr->elem_size) {
             snprintf(errbuf, BUF_ERR_BUFLEN, "%s: corrupt header (data doesn't fit in file)", path);
@@ -373,6 +377,7 @@ static BufHandle *buf_create_map(const char *path, uint64_t capacity,
     h->mmap_size = (size_t)st.st_size;
     h->path = strdup(path);
     h->fd = -1;
+    h->efd = -1;
     return h;
 
 fail:
@@ -423,6 +428,7 @@ static BufHandle *buf_create_anon(uint64_t capacity, uint32_t elem_size,
     h->mmap_size = (size_t)total_size;
     h->path = NULL;
     h->fd = -1;
+    h->efd = -1;
     return h;
 }
 
@@ -481,6 +487,7 @@ static BufHandle *buf_create_memfd(const char *name, uint64_t capacity,
     h->mmap_size = (size_t)total_size;
     h->path = NULL;
     h->fd = fd;
+    h->efd = -1;
     return h;
 }
 
@@ -545,6 +552,7 @@ static BufHandle *buf_open_fd(int fd, uint32_t elem_size, uint32_t variant_id,
         h->mmap_size = (size_t)st.st_size;
         h->path = NULL;
         h->fd = fd;
+        h->efd = -1;
         return h;
     }
 
@@ -553,8 +561,39 @@ fail:
     return NULL;
 }
 
+/* ---- Eventfd integration (opt-in notifications) ---- */
+
+static int buf_create_eventfd(BufHandle *h) {
+    if (h->efd >= 0 && h->efd_owned) close(h->efd);
+    int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (efd < 0) return -1;
+    h->efd = efd;
+    h->efd_owned = 1;
+    return efd;
+}
+
+static void buf_attach_eventfd(BufHandle *h, int efd) {
+    if (h->efd >= 0 && h->efd_owned) close(h->efd);
+    h->efd = efd;
+    h->efd_owned = 0;
+}
+
+static int buf_notify(BufHandle *h) {
+    if (h->efd < 0) return 0;
+    uint64_t val = 1;
+    return write(h->efd, &val, sizeof(val)) == sizeof(val);
+}
+
+static int64_t buf_wait_notify(BufHandle *h) {
+    if (h->efd < 0) return -1;
+    uint64_t val = 0;
+    if (read(h->efd, &val, sizeof(val)) != sizeof(val)) return -1;
+    return (int64_t)val;
+}
+
 static void buf_close_map(BufHandle *h) {
     if (!h) return;
+    if (h->efd >= 0 && h->efd_owned) close(h->efd);
     if (h->hdr) munmap(h->hdr, h->mmap_size);
     if (h->fd >= 0) close(h->fd);
     if (h->path) free(h->path);
@@ -626,11 +665,15 @@ static int BUF_FN(get_raw)(BufHandle *h, uint64_t byte_off, uint64_t nbytes, voi
     uint64_t data_size = h->hdr->capacity * (uint64_t)h->hdr->elem_size;
     if (nbytes > data_size || byte_off > data_size - nbytes) return 0;
     char *data = (char *)h->data;
-    uint32_t seq_start;
-    do {
-        seq_start = buf_seqlock_read_begin(h->hdr);
+    if (h->wr_locked) {
         memcpy(out, data + byte_off, (size_t)nbytes);
-    } while (buf_seqlock_read_retry(&h->hdr->seq, seq_start));
+    } else {
+        uint32_t seq_start;
+        do {
+            seq_start = buf_seqlock_read_begin(h->hdr);
+            memcpy(out, data + byte_off, (size_t)nbytes);
+        } while (buf_seqlock_read_retry(&h->hdr->seq, seq_start));
+    }
     return 1;
 }
 
@@ -664,11 +707,15 @@ static int BUF_FN(get)(BufHandle *h, uint64_t idx, char *out, uint32_t *out_len)
     uint32_t esz = hdr->elem_size;
     if (idx >= hdr->capacity) return 0;
     char *data = (char *)h->data;
-    uint32_t seq_start;
-    do {
-        seq_start = buf_seqlock_read_begin(hdr);
+    if (h->wr_locked) {
         memcpy(out, data + idx * esz, esz);
-    } while (buf_seqlock_read_retry(&hdr->seq, seq_start));
+    } else {
+        uint32_t seq_start;
+        do {
+            seq_start = buf_seqlock_read_begin(hdr);
+            memcpy(out, data + idx * esz, esz);
+        } while (buf_seqlock_read_retry(&hdr->seq, seq_start));
+    }
     uint32_t len = esz;
     while (len > 0 && out[len - 1] == '\0') len--;
     *out_len = len;
@@ -753,11 +800,15 @@ static int BUF_FN(get_slice)(BufHandle *h, uint64_t from, uint64_t count,
     uint32_t esz = hdr->elem_size;
     if (count > hdr->capacity || from > hdr->capacity - count) return 0;
     char *data = (char *)h->data;
-    uint32_t seq_start;
-    do {
-        seq_start = buf_seqlock_read_begin(hdr);
+    if (h->wr_locked) {
         memcpy(out, data + from * esz, count * esz);
-    } while (buf_seqlock_read_retry(&hdr->seq, seq_start));
+    } else {
+        uint32_t seq_start;
+        do {
+            seq_start = buf_seqlock_read_begin(hdr);
+            memcpy(out, data + from * esz, count * esz);
+        } while (buf_seqlock_read_retry(&hdr->seq, seq_start));
+    }
     return 1;
 }
 
@@ -781,11 +832,15 @@ static int BUF_FN(get_slice)(BufHandle *h, uint64_t from, uint64_t count,
     BufHeader *hdr = h->hdr;
     if (count > hdr->capacity || from > hdr->capacity - count) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
-    uint32_t seq_start;
-    do {
-        seq_start = buf_seqlock_read_begin(hdr);
+    if (h->wr_locked) {
         memcpy(out, &data[from], count * sizeof(BUF_ELEM_TYPE));
-    } while (buf_seqlock_read_retry(&hdr->seq, seq_start));
+    } else {
+        uint32_t seq_start;
+        do {
+            seq_start = buf_seqlock_read_begin(hdr);
+            memcpy(out, &data[from], count * sizeof(BUF_ELEM_TYPE));
+        } while (buf_seqlock_read_retry(&hdr->seq, seq_start));
+    }
     return 1;
 }
 
