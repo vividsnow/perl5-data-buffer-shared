@@ -76,7 +76,8 @@ typedef struct {
     BufHeader *hdr;
     void      *data;         /* pointer to element array in mmap */
     size_t     mmap_size;
-    char      *path;         /* backing file path (strdup'd) */
+    char      *path;         /* backing file path (strdup'd, NULL for anon) */
+    int        fd;           /* kept open for memfd, -1 otherwise */
     uint8_t    wr_locked;    /* process-local: 1 if lock_wr is held */
 } BufHandle;
 
@@ -371,6 +372,7 @@ static BufHandle *buf_create_map(const char *path, uint64_t capacity,
     h->data = (char *)base + hdr->data_off;
     h->mmap_size = (size_t)st.st_size;
     h->path = strdup(path);
+    h->fd = -1;
     return h;
 
 fail:
@@ -420,12 +422,141 @@ static BufHandle *buf_create_anon(uint64_t capacity, uint32_t elem_size,
     h->data = (char *)base + data_off;
     h->mmap_size = (size_t)total_size;
     h->path = NULL;
+    h->fd = -1;
     return h;
+}
+
+/* ---- memfd (named anonymous, shareable via fd passing) ---- */
+
+static BufHandle *buf_create_memfd(const char *name, uint64_t capacity,
+                                    uint32_t elem_size, uint32_t variant_id,
+                                    char *errbuf) {
+    errbuf[0] = '\0';
+    uint64_t data_off = sizeof(BufHeader);
+    if (elem_size > 0 && capacity > (UINT64_MAX - data_off) / elem_size) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "buffer size overflow");
+        return NULL;
+    }
+    uint64_t total_size = data_off + capacity * elem_size;
+    if (total_size == 0) total_size = data_off;
+
+    int fd = (int)syscall(SYS_memfd_create, name, 0);
+    if (fd < 0) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "memfd_create: %s", strerror(errno));
+        return NULL;
+    }
+    if (ftruncate(fd, (off_t)total_size) < 0) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "ftruncate(memfd): %s", strerror(errno));
+        close(fd);
+        return NULL;
+    }
+
+    void *base = mmap(NULL, (size_t)total_size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "mmap(memfd): %s", strerror(errno));
+        close(fd);
+        return NULL;
+    }
+
+    BufHeader *hdr = (BufHeader *)base;
+    memset(hdr, 0, sizeof(BufHeader));
+    hdr->magic = BUF_MAGIC;
+    hdr->version = BUF_VERSION;
+    hdr->variant_id = variant_id;
+    hdr->elem_size = elem_size;
+    hdr->capacity = capacity;
+    hdr->total_size = total_size;
+    hdr->data_off = data_off;
+
+    BufHandle *h = (BufHandle *)calloc(1, sizeof(BufHandle));
+    if (!h) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "calloc: out of memory");
+        munmap(base, (size_t)total_size);
+        close(fd);
+        return NULL;
+    }
+    h->hdr = hdr;
+    h->data = (char *)base + data_off;
+    h->mmap_size = (size_t)total_size;
+    h->path = NULL;
+    h->fd = fd;
+    return h;
+}
+
+/* ---- Open from fd (received via SCM_RIGHTS or dup) ---- */
+
+static BufHandle *buf_open_fd(int fd, uint32_t elem_size, uint32_t variant_id,
+                               char *errbuf) {
+    errbuf[0] = '\0';
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fstat(fd=%d): %s", fd, strerror(errno));
+        return NULL;
+    }
+    if ((uint64_t)st.st_size < sizeof(BufHeader)) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: file too small for header", fd);
+        return NULL;
+    }
+
+    void *base = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, 0);
+    if (base == MAP_FAILED) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "mmap(fd=%d): %s", fd, strerror(errno));
+        return NULL;
+    }
+
+    BufHeader *hdr = (BufHeader *)base;
+    if (hdr->magic != BUF_MAGIC) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: bad magic (0x%08x)", fd, hdr->magic);
+        goto fail;
+    }
+    if (hdr->version != BUF_VERSION) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: version mismatch (%u != %u)",
+                 fd, hdr->version, BUF_VERSION);
+        goto fail;
+    }
+    if (hdr->variant_id != variant_id) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: variant mismatch (%u != %u)",
+                 fd, hdr->variant_id, variant_id);
+        goto fail;
+    }
+    if (hdr->elem_size != elem_size) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: elem_size mismatch (%u != %u)",
+                 fd, hdr->elem_size, elem_size);
+        goto fail;
+    }
+    if (hdr->elem_size == 0 ||
+        hdr->data_off >= (uint64_t)st.st_size ||
+        hdr->capacity > ((uint64_t)st.st_size - hdr->data_off) / hdr->elem_size) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: corrupt header", fd);
+        goto fail;
+    }
+
+    {
+        BufHandle *h = (BufHandle *)calloc(1, sizeof(BufHandle));
+        if (!h) {
+            snprintf(errbuf, BUF_ERR_BUFLEN, "calloc: out of memory");
+            munmap(base, (size_t)st.st_size);
+            return NULL;
+        }
+        h->hdr = hdr;
+        h->data = (char *)base + hdr->data_off;
+        h->mmap_size = (size_t)st.st_size;
+        h->path = NULL;
+        h->fd = fd;
+        return h;
+    }
+
+fail:
+    munmap(base, (size_t)st.st_size);
+    return NULL;
 }
 
 static void buf_close_map(BufHandle *h) {
     if (!h) return;
     if (h->hdr) munmap(h->hdr, h->mmap_size);
+    if (h->fd >= 0) close(h->fd);
     if (h->path) free(h->path);
     free(h);
 }
@@ -469,9 +600,23 @@ static BufHandle *BUF_FN(create_anon)(uint64_t capacity, uint32_t str_len, char 
     if (str_len == 0) { snprintf(errbuf, BUF_ERR_BUFLEN, "str_len must be > 0"); return NULL; }
     return buf_create_anon(capacity, str_len, BUF_VARIANT_ID, errbuf);
 }
+static BufHandle *BUF_FN(create_memfd)(const char *name, uint64_t capacity, uint32_t str_len, char *errbuf) {
+    if (str_len == 0) { snprintf(errbuf, BUF_ERR_BUFLEN, "str_len must be > 0"); return NULL; }
+    return buf_create_memfd(name, capacity, str_len, BUF_VARIANT_ID, errbuf);
+}
+static BufHandle *BUF_FN(open_fd)(int fd, uint32_t str_len, char *errbuf) {
+    if (str_len == 0) { snprintf(errbuf, BUF_ERR_BUFLEN, "str_len must be > 0"); return NULL; }
+    return buf_open_fd(fd, str_len, BUF_VARIANT_ID, errbuf);
+}
 #else
 static BufHandle *BUF_FN(create_anon)(uint64_t capacity, char *errbuf) {
     return buf_create_anon(capacity, BUF_ELEM_SIZE, BUF_VARIANT_ID, errbuf);
+}
+static BufHandle *BUF_FN(create_memfd)(const char *name, uint64_t capacity, char *errbuf) {
+    return buf_create_memfd(name, capacity, BUF_ELEM_SIZE, BUF_VARIANT_ID, errbuf);
+}
+static BufHandle *BUF_FN(open_fd)(int fd, char *errbuf) {
+    return buf_open_fd(fd, BUF_ELEM_SIZE, BUF_VARIANT_ID, errbuf);
 }
 #endif
 
@@ -744,6 +889,15 @@ static BUF_ELEM_TYPE BUF_FN(atomic_xor)(BufHandle *h, uint64_t idx, BUF_ELEM_TYP
     if (idx >= h->hdr->capacity) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
     return __atomic_xor_fetch(&data[idx], mask, __ATOMIC_RELAXED);
+}
+
+static int BUF_FN(add_slice)(BufHandle *h, uint64_t from, uint64_t count,
+                              const BUF_ELEM_TYPE *deltas) {
+    if (count > h->hdr->capacity || from > h->hdr->capacity - count) return 0;
+    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
+    for (uint64_t i = 0; i < count; i++)
+        __atomic_add_fetch(&data[from + i], deltas[i], __ATOMIC_RELAXED);
+    return 1;
 }
 
 #endif /* BUF_HAS_COUNTERS */

@@ -200,3 +200,47 @@ set_raw(SV* self_sv, UV byte_off, SV* data_sv)
         RETVAL = buf_f32_set_raw(h, (uint64_t)byte_off, (uint64_t)dlen, dptr);
     OUTPUT:
         RETVAL
+
+SV*
+new_memfd(char* class, char* name, UV capacity)
+    CODE:
+        char errbuf[BUF_ERR_BUFLEN];
+        BufHandle* buf = buf_f32_create_memfd(name, (uint64_t)capacity, errbuf);
+        if (!buf) croak("Data::Buffer::Shared::F32: %s", errbuf[0] ? errbuf : "unknown error");
+        RETVAL = sv_setref_pv(newSV(0), class, (void*)buf);
+    OUTPUT:
+        RETVAL
+
+SV*
+new_from_fd(char* class, int fd)
+    CODE:
+        char errbuf[BUF_ERR_BUFLEN];
+        BufHandle* buf = buf_f32_open_fd(fd, errbuf);
+        if (!buf) croak("Data::Buffer::Shared::F32: %s", errbuf[0] ? errbuf : "unknown error");
+        RETVAL = sv_setref_pv(newSV(0), class, (void*)buf);
+    OUTPUT:
+        RETVAL
+
+SV*
+fd(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        if (h->fd < 0) XSRETURN_UNDEF;
+        RETVAL = newSViv(h->fd);
+    OUTPUT:
+        RETVAL
+
+SV*
+as_scalar(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        size_t len = (size_t)(h->hdr->capacity * h->hdr->elem_size);
+        SV *inner = newSV_type(SVt_PV);
+        SvPV_set(inner, (char *)h->data);
+        SvCUR_set(inner, len);
+        SvLEN_set(inner, 0);
+        SvPOK_on(inner);
+        SvREADONLY_on(inner);
+        RETVAL = newRV_noinc(inner);
+    OUTPUT:
+        RETVAL

@@ -271,3 +271,62 @@ atomic_xor(SV* self_sv, UV idx, UV mask)
         RETVAL = newSVuv(buf_u16_atomic_xor(h, (uint64_t)idx, (uint16_t)mask));
     OUTPUT:
         RETVAL
+
+SV*
+new_memfd(char* class, char* name, UV capacity)
+    CODE:
+        char errbuf[BUF_ERR_BUFLEN];
+        BufHandle* buf = buf_u16_create_memfd(name, (uint64_t)capacity, errbuf);
+        if (!buf) croak("Data::Buffer::Shared::U16: %s", errbuf[0] ? errbuf : "unknown error");
+        RETVAL = sv_setref_pv(newSV(0), class, (void*)buf);
+    OUTPUT:
+        RETVAL
+
+SV*
+new_from_fd(char* class, int fd)
+    CODE:
+        char errbuf[BUF_ERR_BUFLEN];
+        BufHandle* buf = buf_u16_open_fd(fd, errbuf);
+        if (!buf) croak("Data::Buffer::Shared::U16: %s", errbuf[0] ? errbuf : "unknown error");
+        RETVAL = sv_setref_pv(newSV(0), class, (void*)buf);
+    OUTPUT:
+        RETVAL
+
+SV*
+fd(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U16", self_sv);
+        if (h->fd < 0) XSRETURN_UNDEF;
+        RETVAL = newSViv(h->fd);
+    OUTPUT:
+        RETVAL
+
+SV*
+as_scalar(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U16", self_sv);
+        size_t len = (size_t)(h->hdr->capacity * h->hdr->elem_size);
+        SV *inner = newSV_type(SVt_PV);
+        SvPV_set(inner, (char *)h->data);
+        SvCUR_set(inner, len);
+        SvLEN_set(inner, 0);
+        SvPOK_on(inner);
+        SvREADONLY_on(inner);
+        RETVAL = newRV_noinc(inner);
+    OUTPUT:
+        RETVAL
+
+bool
+add_slice(SV* self_sv, UV from, ...)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U16", self_sv);
+        UV count = items - 2;
+        if (count == 0) XSRETURN(1);
+        uint16_t *tmp;
+        Newx(tmp, count, uint16_t);
+        SAVEFREEPV(tmp);
+        for (UV i = 0; i < count; i++)
+            tmp[i] = (uint16_t)SvUV(ST(i + 2));
+        RETVAL = buf_u16_add_slice(h, (uint64_t)from, (uint64_t)count, tmp);
+    OUTPUT:
+        RETVAL
