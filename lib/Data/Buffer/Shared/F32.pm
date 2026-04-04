@@ -18,6 +18,9 @@ sub import {
     $^H{"Data::Buffer::Shared::F32/buf_f32_unlock_rd"} = 1;
     $^H{"Data::Buffer::Shared::F32/buf_f32_ptr"} = 1;
     $^H{"Data::Buffer::Shared::F32/buf_f32_ptr_at"} = 1;
+    $^H{"Data::Buffer::Shared::F32/buf_f32_clear"} = 1;
+    $^H{"Data::Buffer::Shared::F32/buf_f32_get_raw"} = 1;
+    $^H{"Data::Buffer::Shared::F32/buf_f32_set_raw"} = 1;
 }
 
 1;

@@ -119,7 +119,7 @@ SV*
 path(SV* self_sv)
     CODE:
         EXTRACT_BUF("Data::Buffer::Shared::Str", self_sv);
-        RETVAL = newSVpv(h->path, 0);
+        if (h->path) RETVAL = newSVpv(h->path, 0); else XSRETURN_UNDEF;
     OUTPUT:
         RETVAL
 
@@ -176,5 +176,45 @@ ptr_at(SV* self_sv, UV idx)
         void *p = buf_str_ptr_at(h, (uint64_t)idx);
         if (!p) croak("Data::Buffer::Shared::Str: index out of bounds");
         RETVAL = PTR2UV(p);
+    OUTPUT:
+        RETVAL
+
+SV*
+new_anon(char* class, UV capacity, UV str_len)
+    CODE:
+        char errbuf[BUF_ERR_BUFLEN];
+        BufHandle* buf = buf_str_create_anon((uint64_t)capacity, (uint32_t)str_len, errbuf);
+        if (!buf) croak("Data::Buffer::Shared::Str: %s", errbuf[0] ? errbuf : "unknown error");
+        RETVAL = sv_setref_pv(newSV(0), class, (void*)buf);
+    OUTPUT:
+        RETVAL
+
+void
+clear(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::Str", self_sv);
+        buf_str_clear(h);
+
+SV*
+get_raw(SV* self_sv, UV byte_off, UV nbytes)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::Str", self_sv);
+        RETVAL = newSV(nbytes);
+        SvPOK_on(RETVAL);
+        SvCUR_set(RETVAL, nbytes);
+        if (!buf_str_get_raw(h, (uint64_t)byte_off, (uint64_t)nbytes, SvPVX(RETVAL))) {
+            SvREFCNT_dec(RETVAL);
+            croak("Data::Buffer::Shared::Str: get_raw out of bounds");
+        }
+    OUTPUT:
+        RETVAL
+
+bool
+set_raw(SV* self_sv, UV byte_off, SV* data_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::Str", self_sv);
+        STRLEN dlen;
+        const char *dptr = SvPV(data_sv, dlen);
+        RETVAL = buf_str_set_raw(h, (uint64_t)byte_off, (uint64_t)dlen, dptr);
     OUTPUT:
         RETVAL

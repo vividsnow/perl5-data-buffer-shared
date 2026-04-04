@@ -18,10 +18,17 @@ sub import {
     $^H{"Data::Buffer::Shared::U32/buf_u32_unlock_rd"} = 1;
     $^H{"Data::Buffer::Shared::U32/buf_u32_ptr"} = 1;
     $^H{"Data::Buffer::Shared::U32/buf_u32_ptr_at"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_clear"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_get_raw"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_set_raw"} = 1;
     $^H{"Data::Buffer::Shared::U32/buf_u32_incr"} = 1;
     $^H{"Data::Buffer::Shared::U32/buf_u32_decr"} = 1;
     $^H{"Data::Buffer::Shared::U32/buf_u32_add"} = 1;
     $^H{"Data::Buffer::Shared::U32/buf_u32_cas"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_cmpxchg"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_atomic_and"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_atomic_or"} = 1;
+    $^H{"Data::Buffer::Shared::U32/buf_u32_atomic_xor"} = 1;
 }
 
 1;

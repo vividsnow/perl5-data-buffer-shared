@@ -18,10 +18,17 @@ sub import {
     $^H{"Data::Buffer::Shared::I8/buf_i8_unlock_rd"} = 1;
     $^H{"Data::Buffer::Shared::I8/buf_i8_ptr"} = 1;
     $^H{"Data::Buffer::Shared::I8/buf_i8_ptr_at"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_clear"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_get_raw"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_set_raw"} = 1;
     $^H{"Data::Buffer::Shared::I8/buf_i8_incr"} = 1;
     $^H{"Data::Buffer::Shared::I8/buf_i8_decr"} = 1;
     $^H{"Data::Buffer::Shared::I8/buf_i8_add"} = 1;
     $^H{"Data::Buffer::Shared::I8/buf_i8_cas"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_cmpxchg"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_atomic_and"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_atomic_or"} = 1;
+    $^H{"Data::Buffer::Shared::I8/buf_i8_atomic_xor"} = 1;
 }
 
 1;
