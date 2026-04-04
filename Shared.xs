@@ -154,10 +154,17 @@ static const struct XSParseKeywordPieceType pieces_4expr[] = {
     DEFINE_KW_HOOK(variant, PKG, unlock_wr, 1, build_kw_1arg) \
     DEFINE_KW_HOOK(variant, PKG, lock_rd,   1, build_kw_1arg) \
     DEFINE_KW_HOOK(variant, PKG, unlock_rd, 1, build_kw_1arg) \
-    DEFINE_KW_HOOK(variant, PKG, ptr,       1, build_kw_1arg) \
-    DEFINE_KW_HOOK(variant, PKG, ptr_at,    2, build_kw_2arg)
+    DEFINE_KW_HOOK(variant, PKG, ptr,        1, build_kw_1arg) \
+    DEFINE_KW_HOOK(variant, PKG, ptr_at,     2, build_kw_2arg) \
+    DEFINE_KW_HOOK(variant, PKG, clear,      1, build_kw_1arg) \
+    DEFINE_KW_HOOK(variant, PKG, get_raw,    3, build_kw_3arg) \
+    DEFINE_KW_HOOK(variant, PKG, set_raw,    3, build_kw_3arg) \
+    DEFINE_KW_HOOK(variant, PKG, cmpxchg,    4, build_kw_4arg) \
+    DEFINE_KW_HOOK(variant, PKG, atomic_and, 3, build_kw_3arg) \
+    DEFINE_KW_HOOK(variant, PKG, atomic_or,  3, build_kw_3arg) \
+    DEFINE_KW_HOOK(variant, PKG, atomic_xor, 3, build_kw_3arg)
 
-/* Float variants: no incr/decr/add/cas */
+/* Float variants: no incr/decr/add/cas/cmpxchg/bitwise */
 #define DEFINE_FLOAT_KW_HOOKS(variant, PKG) \
     DEFINE_KW_HOOK(variant, PKG, get,       2, build_kw_2arg) \
     DEFINE_KW_HOOK(variant, PKG, set,       3, build_kw_3arg) \
@@ -171,7 +178,10 @@ static const struct XSParseKeywordPieceType pieces_4expr[] = {
     DEFINE_KW_HOOK(variant, PKG, lock_rd,   1, build_kw_1arg) \
     DEFINE_KW_HOOK(variant, PKG, unlock_rd, 1, build_kw_1arg) \
     DEFINE_KW_HOOK(variant, PKG, ptr,       1, build_kw_1arg) \
-    DEFINE_KW_HOOK(variant, PKG, ptr_at,    2, build_kw_2arg)
+    DEFINE_KW_HOOK(variant, PKG, ptr_at,    2, build_kw_2arg) \
+    DEFINE_KW_HOOK(variant, PKG, clear,     1, build_kw_1arg) \
+    DEFINE_KW_HOOK(variant, PKG, get_raw,   3, build_kw_3arg) \
+    DEFINE_KW_HOOK(variant, PKG, set_raw,   3, build_kw_3arg)
 
 DEFINE_INT_KW_HOOKS(i8,  "I8")
 DEFINE_INT_KW_HOOKS(u8,  "U8")
@@ -206,8 +216,15 @@ DEFINE_FLOAT_KW_HOOKS(str, "Str")
     REGISTER_KW(variant, unlock_wr, PKG "::unlock_wr"); \
     REGISTER_KW(variant, lock_rd,   PKG "::lock_rd"); \
     REGISTER_KW(variant, unlock_rd, PKG "::unlock_rd"); \
-    REGISTER_KW(variant, ptr,       PKG "::ptr"); \
-    REGISTER_KW(variant, ptr_at,    PKG "::ptr_at");
+    REGISTER_KW(variant, ptr,        PKG "::ptr"); \
+    REGISTER_KW(variant, ptr_at,     PKG "::ptr_at"); \
+    REGISTER_KW(variant, clear,      PKG "::clear"); \
+    REGISTER_KW(variant, get_raw,    PKG "::get_raw"); \
+    REGISTER_KW(variant, set_raw,    PKG "::set_raw"); \
+    REGISTER_KW(variant, cmpxchg,    PKG "::cmpxchg"); \
+    REGISTER_KW(variant, atomic_and, PKG "::atomic_and"); \
+    REGISTER_KW(variant, atomic_or,  PKG "::atomic_or"); \
+    REGISTER_KW(variant, atomic_xor, PKG "::atomic_xor");
 
 #define REGISTER_FLOAT_KWS(variant, PKG) \
     REGISTER_KW(variant, get,       PKG "::get"); \
@@ -222,7 +239,10 @@ DEFINE_FLOAT_KW_HOOKS(str, "Str")
     REGISTER_KW(variant, lock_rd,   PKG "::lock_rd"); \
     REGISTER_KW(variant, unlock_rd, PKG "::unlock_rd"); \
     REGISTER_KW(variant, ptr,       PKG "::ptr"); \
-    REGISTER_KW(variant, ptr_at,    PKG "::ptr_at");
+    REGISTER_KW(variant, ptr_at,    PKG "::ptr_at"); \
+    REGISTER_KW(variant, clear,     PKG "::clear"); \
+    REGISTER_KW(variant, get_raw,   PKG "::get_raw"); \
+    REGISTER_KW(variant, set_raw,   PKG "::set_raw");
 
 MODULE = Data::Buffer::Shared    PACKAGE = Data::Buffer::Shared::I8
 PROTOTYPES: DISABLE

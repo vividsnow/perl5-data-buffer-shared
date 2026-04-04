@@ -380,6 +380,49 @@ fail:
     return NULL;
 }
 
+/* ---- Anonymous mmap (no file, fork-only sharing) ---- */
+
+static BufHandle *buf_create_anon(uint64_t capacity, uint32_t elem_size,
+                                   uint32_t variant_id, char *errbuf) {
+    errbuf[0] = '\0';
+    uint64_t data_off = sizeof(BufHeader);
+    if (elem_size > 0 && capacity > (UINT64_MAX - data_off) / elem_size) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "buffer size overflow");
+        return NULL;
+    }
+    uint64_t total_size = data_off + capacity * elem_size;
+    if (total_size == 0) total_size = data_off;
+
+    void *base = mmap(NULL, (size_t)total_size, PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (base == MAP_FAILED) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "mmap(anon): %s", strerror(errno));
+        return NULL;
+    }
+
+    BufHeader *hdr = (BufHeader *)base;
+    memset(hdr, 0, sizeof(BufHeader));
+    hdr->magic = BUF_MAGIC;
+    hdr->version = BUF_VERSION;
+    hdr->variant_id = variant_id;
+    hdr->elem_size = elem_size;
+    hdr->capacity = capacity;
+    hdr->total_size = total_size;
+    hdr->data_off = data_off;
+
+    BufHandle *h = (BufHandle *)calloc(1, sizeof(BufHandle));
+    if (!h) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "calloc: out of memory");
+        munmap(base, (size_t)total_size);
+        return NULL;
+    }
+    h->hdr = hdr;
+    h->data = (char *)base + data_off;
+    h->mmap_size = (size_t)total_size;
+    h->path = NULL;
+    return h;
+}
+
 static void buf_close_map(BufHandle *h) {
     if (!h) return;
     if (h->hdr) munmap(h->hdr, h->mmap_size);
@@ -418,6 +461,54 @@ static BufHandle *BUF_FN(create)(const char *path, uint64_t capacity, char *errb
     return buf_create_map(path, capacity, BUF_ELEM_SIZE, BUF_VARIANT_ID, errbuf);
 }
 #endif
+
+/* ---- Create anonymous ---- */
+
+#ifdef BUF_IS_FIXEDSTR
+static BufHandle *BUF_FN(create_anon)(uint64_t capacity, uint32_t str_len, char *errbuf) {
+    if (str_len == 0) { snprintf(errbuf, BUF_ERR_BUFLEN, "str_len must be > 0"); return NULL; }
+    return buf_create_anon(capacity, str_len, BUF_VARIANT_ID, errbuf);
+}
+#else
+static BufHandle *BUF_FN(create_anon)(uint64_t capacity, char *errbuf) {
+    return buf_create_anon(capacity, BUF_ELEM_SIZE, BUF_VARIANT_ID, errbuf);
+}
+#endif
+
+/* ---- Raw byte access (for packed binary interop) ---- */
+
+static int BUF_FN(get_raw)(BufHandle *h, uint64_t byte_off, uint64_t nbytes, void *out) {
+    uint64_t data_size = h->hdr->capacity * (uint64_t)h->hdr->elem_size;
+    if (nbytes > data_size || byte_off > data_size - nbytes) return 0;
+    char *data = (char *)h->data;
+    uint32_t seq_start;
+    do {
+        seq_start = buf_seqlock_read_begin(h->hdr);
+        memcpy(out, data + byte_off, (size_t)nbytes);
+    } while (buf_seqlock_read_retry(&h->hdr->seq, seq_start));
+    return 1;
+}
+
+static int BUF_FN(set_raw)(BufHandle *h, uint64_t byte_off, uint64_t nbytes, const void *in) {
+    uint64_t data_size = h->hdr->capacity * (uint64_t)h->hdr->elem_size;
+    if (nbytes > data_size || byte_off > data_size - nbytes) return 0;
+    char *data = (char *)h->data;
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(h->hdr); buf_seqlock_write_begin(&h->hdr->seq); }
+    memcpy(data + byte_off, in, (size_t)nbytes);
+    if (!nested) { buf_seqlock_write_end(&h->hdr->seq); buf_rwlock_wrunlock(h->hdr); }
+    return 1;
+}
+
+/* ---- Clear (zero entire buffer) ---- */
+
+static void BUF_FN(clear)(BufHandle *h) {
+    BufHeader *hdr = h->hdr;
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(hdr); buf_seqlock_write_begin(&hdr->seq); }
+    memset(h->data, 0, (size_t)(hdr->capacity * hdr->elem_size));
+    if (!nested) { buf_seqlock_write_end(&hdr->seq); buf_rwlock_wrunlock(hdr); }
+}
 
 /* ---- Single-element atomic get (lock-free for numeric types) ---- */
 
@@ -626,6 +717,33 @@ static int BUF_FN(cas)(BufHandle *h, uint64_t idx,
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
     return __atomic_compare_exchange_n(&data[idx], &expected, desired,
                                         0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+}
+
+static BUF_ELEM_TYPE BUF_FN(cmpxchg)(BufHandle *h, uint64_t idx,
+                                       BUF_ELEM_TYPE expected, BUF_ELEM_TYPE desired) {
+    if (idx >= h->hdr->capacity) return expected;
+    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
+    __atomic_compare_exchange_n(&data[idx], &expected, desired,
+                                0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    return expected; /* on failure, expected is updated to the current value */
+}
+
+static BUF_ELEM_TYPE BUF_FN(atomic_and)(BufHandle *h, uint64_t idx, BUF_ELEM_TYPE mask) {
+    if (idx >= h->hdr->capacity) return 0;
+    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
+    return __atomic_and_fetch(&data[idx], mask, __ATOMIC_RELAXED);
+}
+
+static BUF_ELEM_TYPE BUF_FN(atomic_or)(BufHandle *h, uint64_t idx, BUF_ELEM_TYPE mask) {
+    if (idx >= h->hdr->capacity) return 0;
+    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
+    return __atomic_or_fetch(&data[idx], mask, __ATOMIC_RELAXED);
+}
+
+static BUF_ELEM_TYPE BUF_FN(atomic_xor)(BufHandle *h, uint64_t idx, BUF_ELEM_TYPE mask) {
+    if (idx >= h->hdr->capacity) return 0;
+    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
+    return __atomic_xor_fetch(&data[idx], mask, __ATOMIC_RELAXED);
 }
 
 #endif /* BUF_HAS_COUNTERS */

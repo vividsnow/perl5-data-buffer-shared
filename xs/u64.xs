@@ -136,7 +136,7 @@ SV*
 path(SV* self_sv)
     CODE:
         EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
-        RETVAL = newSVpv(h->path, 0);
+        if (h->path) RETVAL = newSVpv(h->path, 0); else XSRETURN_UNDEF;
     OUTPUT:
         RETVAL
 
@@ -193,5 +193,81 @@ ptr_at(SV* self_sv, UV idx)
         void *p = buf_u64_ptr_at(h, (uint64_t)idx);
         if (!p) croak("Data::Buffer::Shared::U64: index out of bounds");
         RETVAL = PTR2UV(p);
+    OUTPUT:
+        RETVAL
+
+SV*
+new_anon(char* class, UV capacity)
+    CODE:
+        char errbuf[BUF_ERR_BUFLEN];
+        BufHandle* buf = buf_u64_create_anon((uint64_t)capacity, errbuf);
+        if (!buf) croak("Data::Buffer::Shared::U64: %s", errbuf[0] ? errbuf : "unknown error");
+        RETVAL = sv_setref_pv(newSV(0), class, (void*)buf);
+    OUTPUT:
+        RETVAL
+
+void
+clear(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        buf_u64_clear(h);
+
+SV*
+get_raw(SV* self_sv, UV byte_off, UV nbytes)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        RETVAL = newSV(nbytes);
+        SvPOK_on(RETVAL);
+        SvCUR_set(RETVAL, nbytes);
+        if (!buf_u64_get_raw(h, (uint64_t)byte_off, (uint64_t)nbytes, SvPVX(RETVAL))) {
+            SvREFCNT_dec(RETVAL);
+            croak("Data::Buffer::Shared::U64: get_raw out of bounds");
+        }
+    OUTPUT:
+        RETVAL
+
+bool
+set_raw(SV* self_sv, UV byte_off, SV* data_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        STRLEN dlen;
+        const char *dptr = SvPV(data_sv, dlen);
+        RETVAL = buf_u64_set_raw(h, (uint64_t)byte_off, (uint64_t)dlen, dptr);
+    OUTPUT:
+        RETVAL
+
+SV*
+cmpxchg(SV* self_sv, UV idx, UV expected, UV desired)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        if (idx >= h->hdr->capacity) croak("Data::Buffer::Shared::U64: index out of bounds");
+        RETVAL = newSVuv(buf_u64_cmpxchg(h, (uint64_t)idx, (uint64_t)expected, (uint64_t)desired));
+    OUTPUT:
+        RETVAL
+
+SV*
+atomic_and(SV* self_sv, UV idx, UV mask)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        if (idx >= h->hdr->capacity) croak("Data::Buffer::Shared::U64: index out of bounds");
+        RETVAL = newSVuv(buf_u64_atomic_and(h, (uint64_t)idx, (uint64_t)mask));
+    OUTPUT:
+        RETVAL
+
+SV*
+atomic_or(SV* self_sv, UV idx, UV mask)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        if (idx >= h->hdr->capacity) croak("Data::Buffer::Shared::U64: index out of bounds");
+        RETVAL = newSVuv(buf_u64_atomic_or(h, (uint64_t)idx, (uint64_t)mask));
+    OUTPUT:
+        RETVAL
+
+SV*
+atomic_xor(SV* self_sv, UV idx, UV mask)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::U64", self_sv);
+        if (idx >= h->hdr->capacity) croak("Data::Buffer::Shared::U64: index out of bounds");
+        RETVAL = newSVuv(buf_u64_atomic_xor(h, (uint64_t)idx, (uint64_t)mask));
     OUTPUT:
         RETVAL

@@ -18,6 +18,9 @@ sub import {
     $^H{"Data::Buffer::Shared::Str/buf_str_unlock_rd"} = 1;
     $^H{"Data::Buffer::Shared::Str/buf_str_ptr"} = 1;
     $^H{"Data::Buffer::Shared::Str/buf_str_ptr_at"} = 1;
+    $^H{"Data::Buffer::Shared::Str/buf_str_clear"} = 1;
+    $^H{"Data::Buffer::Shared::Str/buf_str_get_raw"} = 1;
+    $^H{"Data::Buffer::Shared::Str/buf_str_set_raw"} = 1;
 }
 
 1;
