@@ -1,0 +1,15 @@
+^\.git/
+\.gitignore$
+\.bs$
+\.o$
+\.so$
+\.c$
+^ppport\.h$
+^Makefile$
+^Makefile\.old$
+^MYMETA\.\w+$
+^MANIFEST\.bak$
+^blib/
+^pm_to_blib
+~$
+\.sw[po]$

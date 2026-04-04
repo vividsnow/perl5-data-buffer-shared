@@ -16,6 +16,8 @@ sub import {
     $^H{"Data::Buffer::Shared::U64/buf_u64_unlock_wr"} = 1;
     $^H{"Data::Buffer::Shared::U64/buf_u64_lock_rd"} = 1;
     $^H{"Data::Buffer::Shared::U64/buf_u64_unlock_rd"} = 1;
+    $^H{"Data::Buffer::Shared::U64/buf_u64_ptr"} = 1;
+    $^H{"Data::Buffer::Shared::U64/buf_u64_ptr_at"} = 1;
     $^H{"Data::Buffer::Shared::U64/buf_u64_incr"} = 1;
     $^H{"Data::Buffer::Shared::U64/buf_u64_decr"} = 1;
     $^H{"Data::Buffer::Shared::U64/buf_u64_add"} = 1;

@@ -10,7 +10,6 @@
  * Optional:
  *   BUF_HAS_COUNTERS   — generate incr/decr/cas (integer types only)
  *   BUF_IS_FLOAT       — element is float/double (affects SV conversion)
- *   BUF_IS_UNSIGNED     — element is unsigned integer
  *   BUF_IS_FIXEDSTR    — element is fixed-length char array
  */
 
@@ -78,6 +77,7 @@ typedef struct {
     void      *data;         /* pointer to element array in mmap */
     size_t     mmap_size;
     char      *path;         /* backing file path (strdup'd) */
+    uint8_t    wr_locked;    /* process-local: 1 if lock_wr is held */
 } BufHandle;
 
 /* ---- Futex-based read-write lock ---- */
@@ -105,10 +105,11 @@ static inline int buf_pid_alive(uint32_t pid) {
 }
 
 static inline void buf_recover_stale_lock(BufHeader *hdr, uint32_t observed_rwlock) {
+    uint32_t mypid = BUF_RWLOCK_WR((uint32_t)getpid());
     if (!__atomic_compare_exchange_n(&hdr->rwlock, &observed_rwlock,
-            BUF_RWLOCK_WRITER_BIT, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+            mypid, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
         return;
-    uint32_t seq = __atomic_load_n(&hdr->seq, __ATOMIC_RELAXED);
+    uint32_t seq = __atomic_load_n(&hdr->seq, __ATOMIC_ACQUIRE);
     if (seq & 1)
         __atomic_store_n(&hdr->seq, seq + 1, __ATOMIC_RELEASE);
     __atomic_add_fetch(&hdr->stat_recoveries, 1, __ATOMIC_RELAXED);
@@ -234,8 +235,7 @@ static inline uint32_t buf_seqlock_read_begin(BufHeader *hdr) {
 }
 
 static inline int buf_seqlock_read_retry(uint32_t *seq, uint32_t start) {
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    return __atomic_load_n(seq, __ATOMIC_RELAXED) != start;
+    return __atomic_load_n(seq, __ATOMIC_ACQUIRE) != start;
 }
 
 static inline void buf_seqlock_write_begin(uint32_t *seq) {
@@ -271,10 +271,14 @@ static BufHandle *buf_create_map(const char *path, uint64_t capacity,
         return NULL;
     }
 
-    uint64_t data_off = sizeof(BufHeader);
-    /* Align data to cache line */
-    data_off = (data_off + 63) & ~(uint64_t)63;
-    uint64_t total_size = data_off + (uint64_t)capacity * elem_size;
+    uint64_t data_off = sizeof(BufHeader); /* 128, already cache-line aligned */
+    if (elem_size > 0 && capacity > (UINT64_MAX - data_off) / elem_size) {
+        snprintf(errbuf, BUF_ERR_BUFLEN, "buffer size overflow");
+        flock(fd, LOCK_UN);
+        close(fd);
+        return NULL;
+    }
+    uint64_t total_size = data_off + capacity * elem_size;
 
     struct stat st;
     if (fstat(fd, &st) < 0) {
@@ -339,6 +343,17 @@ static BufHandle *buf_create_map(const char *path, uint64_t capacity,
         if (hdr->variant_id != variant_id) {
             snprintf(errbuf, BUF_ERR_BUFLEN, "%s: variant mismatch (%u != %u)",
                      path, hdr->variant_id, variant_id);
+            goto fail;
+        }
+        if (hdr->elem_size != elem_size) {
+            snprintf(errbuf, BUF_ERR_BUFLEN, "%s: elem_size mismatch (%u != %u)",
+                     path, hdr->elem_size, elem_size);
+            goto fail;
+        }
+        if (hdr->elem_size == 0 ||
+            hdr->data_off >= (uint64_t)st.st_size ||
+            hdr->capacity > ((uint64_t)st.st_size - hdr->data_off) / hdr->elem_size) {
+            snprintf(errbuf, BUF_ERR_BUFLEN, "%s: corrupt header (data doesn't fit in file)", path);
             goto fail;
         }
     }
@@ -429,38 +444,46 @@ static int BUF_FN(set)(BufHandle *h, uint64_t idx, const char *val, uint32_t len
     uint32_t esz = hdr->elem_size;
     if (idx >= hdr->capacity) return 0;
     char *data = (char *)h->data;
-    buf_rwlock_wrlock(hdr);
-    buf_seqlock_write_begin(&hdr->seq);
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(hdr); buf_seqlock_write_begin(&hdr->seq); }
     memset(data + idx * esz, 0, esz);
     uint32_t copy_len = len < esz ? len : esz;
     memcpy(data + idx * esz, val, copy_len);
-    buf_seqlock_write_end(&hdr->seq);
-    buf_rwlock_wrunlock(hdr);
+    if (!nested) { buf_seqlock_write_end(&hdr->seq); buf_rwlock_wrunlock(hdr); }
     return 1;
 }
 
 #elif defined(BUF_IS_FLOAT)
 
-/* Float/double: naturally atomic on x86-64 when aligned, but GCC
- * __atomic builtins don't support floating point. Use memcpy through
- * integer-sized atomic load/store for single-element lock-free access. */
+/* Float/double: GCC __atomic builtins don't support FP types.
+ * Use same-sized integer atomic load/store + memcpy for lock-free access. */
+
+#if BUF_ELEM_SIZE == 4
+typedef uint32_t BUF_PASTE(BUF_PREFIX, _uint_t);
+#elif BUF_ELEM_SIZE == 8
+typedef uint64_t BUF_PASTE(BUF_PREFIX, _uint_t);
+#else
+#error "BUF_IS_FLOAT requires BUF_ELEM_SIZE of 4 or 8"
+#endif
 
 static int BUF_FN(get)(BufHandle *h, uint64_t idx, BUF_ELEM_TYPE *out) {
     BufHeader *hdr = h->hdr;
     if (idx >= hdr->capacity) return 0;
-    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
-    /* Aligned load is atomic on x86-64; use volatile to prevent caching */
-    *out = *(volatile BUF_ELEM_TYPE *)&data[idx];
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    typedef BUF_PASTE(BUF_PREFIX, _uint_t) uint_t;
+    uint_t *idata = (uint_t *)h->data;
+    uint_t tmp = __atomic_load_n(&idata[idx], __ATOMIC_RELAXED);
+    memcpy(out, &tmp, sizeof(BUF_ELEM_TYPE));
     return 1;
 }
 
 static int BUF_FN(set)(BufHandle *h, uint64_t idx, BUF_ELEM_TYPE val) {
     BufHeader *hdr = h->hdr;
     if (idx >= hdr->capacity) return 0;
-    BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    *(volatile BUF_ELEM_TYPE *)&data[idx] = val;
+    typedef BUF_PASTE(BUF_PREFIX, _uint_t) uint_t;
+    uint_t *idata = (uint_t *)h->data;
+    uint_t tmp;
+    memcpy(&tmp, &val, sizeof(BUF_ELEM_TYPE));
+    __atomic_store_n(&idata[idx], tmp, __ATOMIC_RELAXED);
     return 1;
 }
 
@@ -492,7 +515,7 @@ static int BUF_FN(get_slice)(BufHandle *h, uint64_t from, uint64_t count,
                               void *out) {
     BufHeader *hdr = h->hdr;
     uint32_t esz = hdr->elem_size;
-    if (from + count > hdr->capacity) return 0;
+    if (count > hdr->capacity || from > hdr->capacity - count) return 0;
     char *data = (char *)h->data;
     uint32_t seq_start;
     do {
@@ -506,13 +529,12 @@ static int BUF_FN(set_slice)(BufHandle *h, uint64_t from, uint64_t count,
                               const void *in) {
     BufHeader *hdr = h->hdr;
     uint32_t esz = hdr->elem_size;
-    if (from + count > hdr->capacity) return 0;
+    if (count > hdr->capacity || from > hdr->capacity - count) return 0;
     char *data = (char *)h->data;
-    buf_rwlock_wrlock(hdr);
-    buf_seqlock_write_begin(&hdr->seq);
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(hdr); buf_seqlock_write_begin(&hdr->seq); }
     memcpy(data + from * esz, in, count * esz);
-    buf_seqlock_write_end(&hdr->seq);
-    buf_rwlock_wrunlock(hdr);
+    if (!nested) { buf_seqlock_write_end(&hdr->seq); buf_rwlock_wrunlock(hdr); }
     return 1;
 }
 
@@ -521,7 +543,7 @@ static int BUF_FN(set_slice)(BufHandle *h, uint64_t from, uint64_t count,
 static int BUF_FN(get_slice)(BufHandle *h, uint64_t from, uint64_t count,
                               BUF_ELEM_TYPE *out) {
     BufHeader *hdr = h->hdr;
-    if (from + count > hdr->capacity) return 0;
+    if (count > hdr->capacity || from > hdr->capacity - count) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
     uint32_t seq_start;
     do {
@@ -534,13 +556,12 @@ static int BUF_FN(get_slice)(BufHandle *h, uint64_t from, uint64_t count,
 static int BUF_FN(set_slice)(BufHandle *h, uint64_t from, uint64_t count,
                               const BUF_ELEM_TYPE *in) {
     BufHeader *hdr = h->hdr;
-    if (from + count > hdr->capacity) return 0;
+    if (count > hdr->capacity || from > hdr->capacity - count) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
-    buf_rwlock_wrlock(hdr);
-    buf_seqlock_write_begin(&hdr->seq);
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(hdr); buf_seqlock_write_begin(&hdr->seq); }
     memcpy(&data[from], in, count * sizeof(BUF_ELEM_TYPE));
-    buf_seqlock_write_end(&hdr->seq);
-    buf_rwlock_wrunlock(hdr);
+    if (!nested) { buf_seqlock_write_end(&hdr->seq); buf_rwlock_wrunlock(hdr); }
     return 1;
 }
 
@@ -554,15 +575,13 @@ static void BUF_FN(fill)(BufHandle *h, const char *val, uint32_t len) {
     BufHeader *hdr = h->hdr;
     uint32_t esz = hdr->elem_size;
     char *data = (char *)h->data;
-    buf_rwlock_wrlock(hdr);
-    buf_seqlock_write_begin(&hdr->seq);
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(hdr); buf_seqlock_write_begin(&hdr->seq); }
     uint32_t copy_len = len < esz ? len : esz;
-    for (uint64_t i = 0; i < hdr->capacity; i++) {
-        memset(data + i * esz, 0, esz);
+    memset(data, 0, (size_t)hdr->capacity * esz);
+    for (uint64_t i = 0; i < hdr->capacity; i++)
         memcpy(data + i * esz, val, copy_len);
-    }
-    buf_seqlock_write_end(&hdr->seq);
-    buf_rwlock_wrunlock(hdr);
+    if (!nested) { buf_seqlock_write_end(&hdr->seq); buf_rwlock_wrunlock(hdr); }
 }
 
 #else
@@ -570,12 +589,11 @@ static void BUF_FN(fill)(BufHandle *h, const char *val, uint32_t len) {
 static void BUF_FN(fill)(BufHandle *h, BUF_ELEM_TYPE val) {
     BufHeader *hdr = h->hdr;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
-    buf_rwlock_wrlock(hdr);
-    buf_seqlock_write_begin(&hdr->seq);
+    int nested = h->wr_locked;
+    if (!nested) { buf_rwlock_wrlock(hdr); buf_seqlock_write_begin(&hdr->seq); }
     for (uint64_t i = 0; i < hdr->capacity; i++)
         data[i] = val;
-    buf_seqlock_write_end(&hdr->seq);
-    buf_rwlock_wrunlock(hdr);
+    if (!nested) { buf_seqlock_write_end(&hdr->seq); buf_rwlock_wrunlock(hdr); }
 }
 
 #endif
@@ -585,16 +603,19 @@ static void BUF_FN(fill)(BufHandle *h, BUF_ELEM_TYPE val) {
 #ifdef BUF_HAS_COUNTERS
 
 static BUF_ELEM_TYPE BUF_FN(incr)(BufHandle *h, uint64_t idx) {
+    if (idx >= h->hdr->capacity) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
     return __atomic_add_fetch(&data[idx], 1, __ATOMIC_RELAXED);
 }
 
 static BUF_ELEM_TYPE BUF_FN(decr)(BufHandle *h, uint64_t idx) {
+    if (idx >= h->hdr->capacity) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
     return __atomic_sub_fetch(&data[idx], 1, __ATOMIC_RELAXED);
 }
 
 static BUF_ELEM_TYPE BUF_FN(add)(BufHandle *h, uint64_t idx, BUF_ELEM_TYPE delta) {
+    if (idx >= h->hdr->capacity) return 0;
     BUF_ELEM_TYPE *data = (BUF_ELEM_TYPE *)h->data;
     return __atomic_add_fetch(&data[idx], delta, __ATOMIC_RELAXED);
 }
@@ -623,14 +644,27 @@ static inline uint32_t BUF_FN(elem_size)(BufHandle *h) {
     return h->hdr->elem_size;
 }
 
+/* ---- Raw pointer access (for passing to external C/XS code) ---- */
+
+static inline void *BUF_FN(ptr)(BufHandle *h) {
+    return h->data;
+}
+
+static inline void *BUF_FN(ptr_at)(BufHandle *h, uint64_t idx) {
+    if (idx >= h->hdr->capacity) return NULL;
+    return (char *)h->data + idx * h->hdr->elem_size;
+}
+
 /* ---- Explicit locking for batch operations ---- */
 
 static inline void BUF_FN(lock_wr)(BufHandle *h) {
     buf_rwlock_wrlock(h->hdr);
     buf_seqlock_write_begin(&h->hdr->seq);
+    h->wr_locked = 1;
 }
 
 static inline void BUF_FN(unlock_wr)(BufHandle *h) {
+    h->wr_locked = 0;
     buf_seqlock_write_end(&h->hdr->seq);
     buf_rwlock_wrunlock(h->hdr);
 }
@@ -657,9 +691,6 @@ static inline void BUF_FN(unlock_rd)(BufHandle *h) {
 #endif
 #ifdef BUF_IS_FLOAT
 #undef BUF_IS_FLOAT
-#endif
-#ifdef BUF_IS_UNSIGNED
-#undef BUF_IS_UNSIGNED
 #endif
 #ifdef BUF_IS_FIXEDSTR
 #undef BUF_IS_FIXEDSTR

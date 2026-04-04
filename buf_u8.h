@@ -4,5 +4,4 @@
 #define BUF_ELEM_SIZE    1
 #define BUF_VARIANT_ID   2
 #define BUF_HAS_COUNTERS
-#define BUF_IS_UNSIGNED
 #include "buf_generic.h"

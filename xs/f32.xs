@@ -142,3 +142,21 @@ unlink(SV* self_or_class, ...)
             p = SvPV_nolen(ST(1));
         }
         unlink(p);
+
+UV
+ptr(SV* self_sv)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        RETVAL = PTR2UV(buf_f32_ptr(h));
+    OUTPUT:
+        RETVAL
+
+UV
+ptr_at(SV* self_sv, UV idx)
+    CODE:
+        EXTRACT_BUF("Data::Buffer::Shared::F32", self_sv);
+        void *p = buf_f32_ptr_at(h, (uint64_t)idx);
+        if (!p) croak("Data::Buffer::Shared::F32: index out of bounds");
+        RETVAL = PTR2UV(p);
+    OUTPUT:
+        RETVAL

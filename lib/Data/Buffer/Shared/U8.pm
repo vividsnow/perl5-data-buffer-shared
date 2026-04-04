@@ -16,6 +16,8 @@ sub import {
     $^H{"Data::Buffer::Shared::U8/buf_u8_unlock_wr"} = 1;
     $^H{"Data::Buffer::Shared::U8/buf_u8_lock_rd"} = 1;
     $^H{"Data::Buffer::Shared::U8/buf_u8_unlock_rd"} = 1;
+    $^H{"Data::Buffer::Shared::U8/buf_u8_ptr"} = 1;
+    $^H{"Data::Buffer::Shared::U8/buf_u8_ptr_at"} = 1;
     $^H{"Data::Buffer::Shared::U8/buf_u8_incr"} = 1;
     $^H{"Data::Buffer::Shared::U8/buf_u8_decr"} = 1;
     $^H{"Data::Buffer::Shared::U8/buf_u8_add"} = 1;

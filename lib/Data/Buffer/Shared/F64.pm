@@ -16,6 +16,8 @@ sub import {
     $^H{"Data::Buffer::Shared::F64/buf_f64_unlock_wr"} = 1;
     $^H{"Data::Buffer::Shared::F64/buf_f64_lock_rd"} = 1;
     $^H{"Data::Buffer::Shared::F64/buf_f64_unlock_rd"} = 1;
+    $^H{"Data::Buffer::Shared::F64/buf_f64_ptr"} = 1;
+    $^H{"Data::Buffer::Shared::F64/buf_f64_ptr_at"} = 1;
 }
 
 1;

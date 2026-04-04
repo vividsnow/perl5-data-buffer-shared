@@ -100,4 +100,22 @@ is($buf->path, $path, 'path');
 # mmap_size
 ok($buf->mmap_size > 0, 'mmap_size > 0');
 
+# ptr / ptr_at
+my $base = $buf->ptr;
+ok($base > 0, 'ptr returns non-zero address');
+my $p0 = $buf->ptr_at(0);
+is($p0, $base, 'ptr_at(0) == ptr');
+my $p1 = $buf->ptr_at(1);
+is($p1, $base + 8, 'ptr_at(1) == ptr + elem_size');
+
+# keyword ptr
+my $kp = buf_i64_ptr $buf;
+is($kp, $base, 'keyword ptr');
+my $kpa = buf_i64_ptr_at $buf, 5;
+is($kpa, $base + 40, 'keyword ptr_at');
+
+# ptr_at out of bounds
+eval { $buf->ptr_at(100) };
+like($@, qr/out of bounds/, 'ptr_at out of bounds croaks');
+
 done_testing;
