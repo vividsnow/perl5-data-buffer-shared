@@ -1,0 +1,71 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        perl: ['5.40', '5.38', '5.36', '5.34', '5.32', '5.30', '5.28', '5.26', '5.24', '5.22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Perl ${{ matrix.perl }}
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: ${{ matrix.perl }}
+
+      - name: Install deps
+        run: cpanm -n XS::Parse::Keyword Devel::PPPort
+
+      - name: Build
+        run: |
+          perl Makefile.PL
+          make
+
+      - name: Test
+        run: make test
+
+  test-alpine:
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          apk add --no-cache perl perl-dev make gcc musl-dev linux-headers wget
+          wget -qO- https://cpanmin.us | perl - App::cpanminus
+          cpanm -n XS::Parse::Keyword Devel::PPPort
+
+      - name: Build and test
+        run: |
+          perl Makefile.PL
+          make
+          make test
+
+  test-asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: '5.40'
+
+      - name: Install deps
+        run: cpanm -n XS::Parse::Keyword Devel::PPPort
+
+      - name: Build with ASAN
+        run: |
+          perl Makefile.PL
+          ASAN_LIB=$(cc -print-file-name=libasan.so)
+          make OPTIMIZE="-g -fsanitize=address -fno-omit-frame-pointer"
+          LD_PRELOAD="$ASAN_LIB" ASAN_OPTIONS="detect_leaks=0" make test

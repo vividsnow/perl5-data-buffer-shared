@@ -19,6 +19,21 @@
 
 #include "XSParseKeyword.h"
 
+/* ---- as_scalar magic: prevent use-after-free by preventing buffer DESTROY
+ * while the returned scalar ref is alive. We attach magic to the inner SV
+ * that holds a reference to the buffer object. When the inner SV is freed,
+ * the magic destructor releases the reference. ---- */
+
+static int buf_scalar_magic_free(pTHX_ SV *sv, MAGIC *mg) {
+    PERL_UNUSED_ARG(sv);
+    if (mg->mg_obj) SvREFCNT_dec(mg->mg_obj);
+    return 0;
+}
+
+static const MGVTBL buf_scalar_magic_vtbl = {
+    NULL, NULL, NULL, NULL, buf_scalar_magic_free, NULL, NULL, NULL
+};
+
 /* ---- Helper macros ---- */
 
 #define EXTRACT_BUF(classname, sv) \
