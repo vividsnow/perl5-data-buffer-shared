@@ -534,6 +534,7 @@ static BufHandle *buf_open_fd(int fd, uint32_t elem_size, uint32_t variant_id,
         goto fail;
     }
     if (hdr->elem_size == 0 ||
+        hdr->data_off < sizeof(BufHeader) ||
         hdr->data_off >= (uint64_t)st.st_size ||
         hdr->capacity > ((uint64_t)st.st_size - hdr->data_off) / hdr->elem_size) {
         snprintf(errbuf, BUF_ERR_BUFLEN, "fd=%d: corrupt header", fd);
