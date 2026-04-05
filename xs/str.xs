@@ -259,6 +259,8 @@ as_scalar(SV* self_sv)
         SvLEN_set(inner, 0);
         SvPOK_on(inner);
         SvREADONLY_on(inner);
+        MAGIC *mg = sv_magicext(inner, NULL, PERL_MAGIC_ext, &buf_scalar_magic_vtbl, NULL, 0);
+        mg->mg_obj = SvREFCNT_inc_simple_NN(self_sv);
         RETVAL = newRV_noinc(inner);
     OUTPUT:
         RETVAL
@@ -268,7 +270,7 @@ create_eventfd(SV* self_sv)
     CODE:
         EXTRACT_BUF("Data::Buffer::Shared::Str", self_sv);
         RETVAL = (IV)buf_create_eventfd(h);
-        if (RETVAL < 0) croak("Data::Buffer::Shared::STR: eventfd: %s", strerror(errno));
+        if (RETVAL < 0) croak("Data::Buffer::Shared::Str: eventfd: %s", strerror(errno));
     OUTPUT:
         RETVAL
 

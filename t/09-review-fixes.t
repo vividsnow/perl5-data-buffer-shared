@@ -80,4 +80,18 @@ use Data::Buffer::Shared::Str;
     $buf->unlock_wr;
 }
 
+# === as_scalar keeps buffer alive (prevents use-after-free) ===
+{
+    my $ref;
+    {
+        my $buf = Data::Buffer::Shared::I64->new_anon(10);
+        $buf->set(0, 12345);
+        $ref = $buf->as_scalar;
+        # $buf goes out of scope here — but magic ref prevents DESTROY
+    }
+    # buffer should still be alive because $ref holds a backref
+    my @vals = unpack("q<", $$ref);
+    is($vals[0], 12345, 'as_scalar keeps buffer alive after scope exit');
+}
+
 done_testing;
