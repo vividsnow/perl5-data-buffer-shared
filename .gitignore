@@ -11,3 +11,4 @@ Shared.bs
 *.o
 ppport.h
 MANIFEST.bak
+*.tar.gz
