@@ -1,5 +1,9 @@
 Revision history for Data-Buffer-Shared
 
+0.06      2026-07-21
+          - Release a lock still held when its handle is destroyed.
+          - Reject Str lengths above 2^32.
+
 0.05  2026-07-03
     - Security and robustness hardening; backing files now created mode
       0600 (pass a file-mode argument to new() for cross-user sharing).
