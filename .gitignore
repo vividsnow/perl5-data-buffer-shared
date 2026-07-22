@@ -12,3 +12,4 @@ Shared.bs
 ppport.h
 MANIFEST.bak
 *.tar.gz
+/Data-Buffer-Shared-*/
