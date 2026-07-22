@@ -90,6 +90,7 @@ xt/eg_runs.t
 xt/enospc.t
 xt/fd_leak.t
 xt/fd_validation.t
+xt/fork_lock_release.t
 xt/invalid_args.t
 xt/kwalitee.t
 xt/lock_leak_on_destroy.t
