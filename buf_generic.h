@@ -948,8 +948,27 @@ static void buf_close_map(BufHandle *h) {
      * other process starves until this one exits. rdepth is per-process and
      * shared by all handles, so we can only drop what THIS handle owes. */
     if (h->hdr) {
-        while (h->rd_held > 0) buf_rwlock_rdunlock(h);   /* decrements rd_held */
-        if (h->wr_locked) { buf_rwlock_wrunlock(h); h->wr_locked = 0; }
+        /* Release only locks THIS process took.  A forked child inherits
+         * rd_held/wr_locked verbatim, but those holds were published by the
+         * parent (its slot rdepth, its pid in wlock): dropping them here
+         * would unlock the parent's live critical section.  Same owner test
+         * as the slot-release guard below; cached_pid/cached_fork_gen are
+         * recorded by buf_claim_reader_slot, which every lock op runs, so a
+         * nonzero rd_held/wr_locked implies they are set. */
+        uint32_t cur_gen = __atomic_load_n(&buf_fork_gen, __ATOMIC_RELAXED);
+        if (h->cached_pid && h->cached_pid == (uint32_t)getpid() &&
+            h->cached_fork_gen == cur_gen) {
+            while (h->rd_held > 0) buf_rwlock_rdunlock(h);   /* decrements rd_held */
+            /* Mirror unlock_wr exactly: end the seqlock section BEFORE
+             * dropping wlock.  wrunlock alone leaves seq odd forever, and
+             * every seqlock bulk reader then spins in its slow path with no
+             * recovery (wlock == 0, so stale-writer recovery never fires). */
+            if (h->wr_locked) {
+                buf_seqlock_write_end(&h->hdr->seq);
+                buf_rwlock_wrunlock(h);
+                h->wr_locked = 0;
+            }
+        }
     }
     /* Release reader slot -- only if we still own it AND no fork has happened
      * since we claimed it.  A forked child that inherits the handle but never
