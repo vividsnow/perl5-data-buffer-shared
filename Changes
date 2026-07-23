@@ -1,6 +1,8 @@
 Revision history for Data-Buffer-Shared
 
 0.06      2026-07-22
+          - On-disk format change (v2 -> v3): an existing 0.05 file is
+            refused; recreate it.
           - Release a lock still held when its handle is destroyed.
           - Keep the parent's locks when a forked child's handle is destroyed:
             the close path now releases only locks the exiting process took
