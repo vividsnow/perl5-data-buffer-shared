@@ -80,6 +80,8 @@ jobs:
           perl-version: '5.40'
       - run: cpanm -n XS::Parse::Keyword Devel::PPPort
       - run: perl Makefile.PL && make && make test
+      - name: Shared-memory author tests
+        run: AUTHOR_TESTING=1 prove -b xt/reader_starvation_guard.t
 
   test-ubsan:
     runs-on: ubuntu-latest
@@ -107,7 +109,7 @@ jobs:
           perl-version: '5.40'
       - run: cpanm -n XS::Parse::Keyword Devel::PPPort BSD::Resource Time::HiRes
       - run: perl Makefile.PL && make
-      - run: AUTHOR_TESTING=1 prove -b -j2 xt/*.t
+      - run: AUTHOR_TESTING=1 prove -b xt/*.t
         env:
           AUTHOR_TESTING: 1
 
